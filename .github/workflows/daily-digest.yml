@@ -1,0 +1,47 @@
+name: Daily pediatric digest
+
+on:
+  schedule:
+    # 01:00 UTC = 08:00 по Барнаулу (UTC+7).
+    - cron: "0 1 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-and-send:
+    runs-on: ubuntu-latest
+    env:
+      NCBI_EMAIL: ${{ secrets.NCBI_EMAIL }}
+      DIGEST_TO: ${{ secrets.DIGEST_TO }}
+      SMTP_USER: ${{ secrets.SMTP_USER }}
+      SMTP_APP_PASSWORD: ${{ secrets.SMTP_APP_PASSWORD }}
+    steps:
+      - name: Checkout project
+        uses: actions/checkout@v4
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - name: Install project
+        run: python -m pip install --disable-pip-version-check .
+      - name: Run collection and build digest
+        shell: bash
+        run: |
+          set -euo pipefail
+          today="$(date -u +%F)"
+          db="data/github-${today}.sqlite3"
+          out="outputs/github-${today}"
+          python -m pediatric_surveillance.cli init-db --db "$db"
+          python -m pediatric_surveillance.cli run-all --db "$db" --output "$out" --recipient "$DIGEST_TO"
+          python -m pediatric_surveillance.cli appraise --db "$db" --output "$out"
+          python -m pediatric_surveillance.cli import-context --db "$db" --file data/editorial_context.json
+          python -m pediatric_surveillance.cli digest --db "$db" --output "$out" --recipient "$DIGEST_TO"
+          html="$(find "$out" -maxdepth 1 -type f -name '*.html' -printf '%T@ %p\n' | sort -nr | head -n1 | cut -d' ' -f2-)"
+          test -n "$html"
+          echo "DIGEST_HTML=$html" >> "$GITHUB_ENV"
+          echo "DIGEST_DATE=$today" >> "$GITHUB_ENV"
+      - name: Send digest through Gmail SMTP
+        run: python work/send_digest_smtp.py
+
